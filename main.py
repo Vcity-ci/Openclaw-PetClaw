@@ -260,7 +260,7 @@ class PetClawMain(QMainWindow):
             success, msg = self.cm.destroy_gateway_container()
             if success:
                 self.log_sys.write_log(f"🔥 {msg}", force=True)
-                # 销毁后重置灯光状态（虽然定时器也会更新，但这里手动刷一下交互更好）
+                # 销毁后重置灯光状态
                 self.gateway_led.setText("⚪ 容器已销毁")
                 self.gateway_led.setStyleSheet("color: gray;")
             else:
@@ -273,8 +273,7 @@ class PetClawMain(QMainWindow):
             self.sm.ensure_backup()
             
             self.vm = VolumeManager(root_path)
-            
-            # 只有这里才会实例化 EnvManager，此时 user_selected_path 已存在
+
             self.em = EnvManager(root_path)
             self.em.ensure_backup()
 
