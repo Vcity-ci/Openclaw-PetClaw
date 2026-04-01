@@ -11,6 +11,8 @@ from modules.container_manager import ContainerManager
 from modules.security_manager import SecurityManager
 from modules.volume_manager import VolumeManager
 from modules.env_manager import EnvManager
+from modules.config_manager import ConfigManager
+from modules.operation_manager import OperationManager
 
 class PetClawMain(QMainWindow):
     def __init__(self):
@@ -18,17 +20,22 @@ class PetClawMain(QMainWindow):
         self.pm = PortManager()
         self.log_sys = LoggerManager()
         self.cm = ContainerManager()
+        self.cfg = ConfigManager()
+
         
         self.user_selected_path = ""
         self.em = None 
         self.sm = None
         self.vm = None
+        self.om = None
 
         self.input_path = ""
         self.output_path = ""
         self.current_page = 0
         
         self.init_ui()
+        self.restore_saved_paths()
+
         
         # 状态监测定时器
         self.monitor_timer = QTimer()
@@ -36,7 +43,7 @@ class PetClawMain(QMainWindow):
         self.monitor_timer.start(2000) # 每2秒检查一次
 
     def init_ui(self):
-        self.setWindowTitle("PetClaw v0.8")
+        self.setWindowTitle("PetClaw v1.0")
         self.setFixedSize(550, 850)
         layout = QVBoxLayout()
 
@@ -82,6 +89,12 @@ class PetClawMain(QMainWindow):
         h_box_security.addWidget(self.btn_restore)
         layout.addLayout(h_box_security)
 # ==========================================================
+        #备份路径
+        self.label_input = QLabel("Input (RO): 未选择")
+        self.label_output = QLabel("Output (RW): 未选择")
+        layout.addWidget(self.label_input)
+        layout.addWidget(self.label_output)
+
 
         h_box_paths = QHBoxLayout()
         self.btn_set_in = QPushButton("设置输入源 (RO)")
@@ -123,6 +136,25 @@ class PetClawMain(QMainWindow):
         h_box_gate.addWidget(self.btn_destroy)
         layout.addLayout(h_box_gate)
 
+        # [3. 开启网关服务 (Gateway)] 
+        layout.addWidget(QLabel("<br><b>[ 4. 自动化运维 ]</b>")) # 建议新起一段
+        
+        self.btn_one_click = QPushButton("🚀 一键全速启动 (All-in-One)")
+        self.btn_one_click.setStyleSheet("""
+            QPushButton {
+                background-color: #2d5a27; 
+                color: #ffffff; 
+                font-weight: bold; 
+                height: 40px; 
+                border-radius: 5px;
+            }
+            QPushButton:hover { background-color: #3e7a36; }
+            QPushButton:disabled { background-color: #333; color: #777; }
+        """)
+        self.btn_one_click.setEnabled(False) # 初始禁用
+        self.btn_one_click.clicked.connect(self.one_click_logic)
+        layout.addWidget(self.btn_one_click)
+
         # [4. 审计日志]
         layout.addWidget(QLabel("<br><b>[ 流程审计日志 ]</b>"))
         self.log_box = QTextBrowser()
@@ -160,27 +192,77 @@ class PetClawMain(QMainWindow):
             self.log_sys.write_log(f"锁定根目录: {path}")
             self.refresh_log_view()
             self.init_security()
+            self.persist_paths()
+
 
     def select_in_logic(self):
         path = QFileDialog.getExistingDirectory(self, "选择输入目录 (RO)")
         if path:
             self.input_path = path
+            self.label_input.setText(f"Input (RO): ...{path[-30:]}")
+            self.persist_paths()
             self.log_sys.write_log(f"设置输入挂载: {path}")
             self.refresh_log_view()
+
 
     def select_out_logic(self):
         path = QFileDialog.getExistingDirectory(self, "选择输出目录 (RW)")
         if path:
             self.output_path = path
+            self.label_output.setText(f"Output (RW): ...{path[-30:]}")
+            self.persist_paths()
             self.log_sys.write_log(f"设置输出挂载: {path}")
             self.refresh_log_view()
+
+    def persist_paths(self):
+        self.cfg.update_paths(
+            self.user_selected_path,
+            self.input_path,
+            self.output_path,
+        )
+
+
+    def restore_saved_paths(self):
+        saved = self.cfg.load()
+
+        root_path = saved.get("openclaw_root", "")
+        input_path = saved.get("input_dir", "")
+        output_path = saved.get("output_dir", "")
+
+        restored_items = []
+
+        if root_path and os.path.isdir(root_path):
+            self.user_selected_path = root_path
+            self.label_root.setText(f"根目录：...{root_path[-30:]}")
+            self.btn_copy_onboard.setEnabled(True)
+            self.init_security()
+            restored_items.append("OpenClaw 根目录")
+
+        if input_path and os.path.isdir(input_path):
+            self.input_path = input_path
+            if hasattr(self, "label_input"):
+                self.label_input.setText(f"Input (RO): ...{input_path[-30:]}")
+            restored_items.append("输入目录")
+
+        if output_path and os.path.isdir(output_path):
+            self.output_path = output_path
+            if hasattr(self, "label_output"):
+                self.label_output.setText(f"Output (RW): ...{output_path[-30:]}")
+            restored_items.append("输出目录")
+
+        if restored_items:
+            restored_text = "、".join(restored_items)
+            self.log_sys.write_log(f"已恢复本地配置: {restored_text}", force=True)
+            self.refresh_log_view()
+
+
 
     def copy_onboard_cmd(self):
         """拼接并复制 Step 2 命令"""
         base = os.path.abspath(self.user_selected_path)
         # 构造 CMD 兼容的命令（支持跨盘符 cd）
         drive = base[:2]
-        cmd = f"{drive} && cd \"{base}\" && docker compose up -d"
+        cmd = f"{drive} && cd \"{base}\" && docker compose run --rm openclaw-cli onboard"
         
         QApplication.clipboard().setText(cmd)
         self.log_sys.write_log(f"已复制 Onboard 指令。请在终端粘贴执行。")
@@ -276,14 +358,30 @@ class PetClawMain(QMainWindow):
 
             self.em = EnvManager(root_path)
             self.em.ensure_backup()
+            self.om = OperationManager(self.user_selected_path)
 
             self.btn_harden_port.setEnabled(True)
-            self.btn_harden_vol.setEnabled(True)
             self.btn_restore.setEnabled(True)
+            self.btn_one_click.setEnabled(True)
 
             self.update_security_status()
         except Exception as e:
             self.security_status.setText(f"❌ 初始化失败: {e}")
+    def one_click_logic(self):
+        if not self.om:
+                return
+            
+        self.log_sys.write_log("🚀 正在执行一键启动流程...", force=True)
+        self.refresh_log_view() # 立即刷新日志显示启动中
+        success, msg = self.om.run_one_click_startup()
+        
+        if success:
+            self.log_sys.write_log(f"✅ {msg}", force=True)
+        else:
+            self.log_sys.write_log(f"❌ {msg}", force=True)
+            QMessageBox.critical(self, "启动失败", msg)
+            
+        self.refresh_log_view()
 
 
     def harden_port_logic(self):
